@@ -12,6 +12,9 @@ class TestParser(unittest.TestCase):
         with self.assertRaises(ParseError) as ctx:
             parse_one("")
 
+    def test_parse_jinja(self):
+        self.assertIsInstance(parse_one("{% for koopi in hookl %}pipi{% endfor%}", into=exp.Jinja), exp.DataType)
+
     def test_parse_into(self):
         self.assertIsInstance(parse_one("left join foo", into=exp.Join), exp.Join)
         self.assertIsInstance(parse_one("int", into=exp.DataType), exp.DataType)

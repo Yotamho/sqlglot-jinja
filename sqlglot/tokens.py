@@ -327,7 +327,13 @@ class TokenType(AutoName):
     UNIQUE = auto()
     VERSION_SNAPSHOT = auto()
     TIMESTAMP_SNAPSHOT = auto()
+    JINJA_STATEMENT = auto()
+    JINJA_EXPRESSION = auto()
 
+class JinjaKind(AutoName):
+    LEFT = auto()
+    RIGHT = auto()
+    CLOSURE = auto()
 
 class Token:
     __slots__ = ("token_type", "text", "line", "col", "start", "end", "comments")
@@ -777,6 +783,16 @@ class Tokenizer(metaclass=_Tokenizer):
 
     COMMENTS = ["--", ("/*", "*/")]
 
+    JINJA_OPEN = {
+        "{{": TokenType.JINJA_STATEMENT,
+        "{%": TokenType.JINJA_EXPRESSION
+    }
+
+    JINJA_CLOSE = {
+        TokenType.JINJA_STATEMENT: "}}",
+        TokenType.JINJA_EXPRESSION: "%}"
+    }
+
     __slots__ = (
         "sql",
         "size",
@@ -839,6 +855,8 @@ class Tokenizer(metaclass=_Tokenizer):
                     self._scan_number()
                 elif self._char in self._IDENTIFIERS:
                     self._scan_identifier(self._IDENTIFIERS[self._char])
+                elif self._scan_jinja():
+                    continue
                 else:
                     self._scan_keywords()
 
@@ -989,6 +1007,67 @@ class Tokenizer(metaclass=_Tokenizer):
         self._advance(size - 1)
         word = word.upper()
         self._add(self.KEYWORDS[word], text=word)
+
+    @staticmethod
+    def extract_jinja_kind(t: TokenType, s: str) -> JinjaKind:
+        if t == TokenType.JINJA_EXPRESSION and "=" not in s:
+            expression_subtype = s[2:].lstrip().split(" ")[0].split("%")[0]
+            if expression_subtype.startswith("end"):
+                return JinjaKind.RIGHT
+            else:
+                return JinjaKind.LEFT
+        else:
+            return JinjaKind.CLOSURE
+    
+    def _scan_jinja_one(self) -> t.Optional[t.Tuple[TokenType, str]]:
+        current_2_tokens = self._char + self._peek
+        if current_2_tokens in self.JINJA_OPEN:
+            token_type = self.JINJA_OPEN[current_2_tokens]
+            text = self._char
+            closing = self.JINJA_CLOSE[token_type]
+            while self.size and current_2_tokens != closing:
+                self._advance()
+                text += self._char
+                current_2_tokens = self._char + self._peek
+            if current_2_tokens == closing:
+                self._advance()
+                text += self._char
+            return (token_type, text)
+        else:
+            return None
+    
+    def _scan_jinja_multi_expression(self) -> str:
+        expression_stack_size = 1
+        text = ""
+        self._advance()
+        while self.size and expression_stack_size:
+            jinja = self._scan_jinja_one()
+            if jinja:
+                text += jinja[1]
+                kind = self.extract_jinja_kind(jinja[0], jinja[1])
+                if kind == JinjaKind.LEFT:
+                    expression_stack_size += 1
+                elif kind == JinjaKind.RIGHT:
+                    expression_stack_size -= 1
+            else:
+                text += self._char
+                self._advance()
+        return text
+
+
+    def _scan_jinja(self) -> bool:
+        token = self._scan_jinja_one()
+        if token:
+            kind = self.extract_jinja_kind(token[0], token[1])
+            if kind == JinjaKind.LEFT:
+                remainder = self._scan_jinja_multi_expression()
+                token = (token[0], token[1] + remainder)
+            elif kind == JinjaKind.RIGHT:
+                raise ValueError("WTF?!")
+            self._add(token[0], token[1])
+            return True
+        else:
+            return False
 
     def _scan_comment(self, comment_start: str) -> bool:
         if comment_start not in self._COMMENTS:
